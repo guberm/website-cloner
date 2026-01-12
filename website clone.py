@@ -4,13 +4,15 @@ import time
 import os
 import urllib.parse
 import requests
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from urllib.parse import urljoin, urlparse
 
-# Defaults (only max pages keeps a default)
-DEFAULT_MAX_PAGES = 500
+# Defaults (max_pages=0 means discover all and download all)
+DEFAULT_MAX_PAGES = 0
 
 # These will be set at runtime based on CLI flags or interactive input
 BASE_URL = None
@@ -23,7 +25,7 @@ def parse_args():
     parser.add_argument("--base-url", help="Base URL to start crawling (required or asked interactively)")
     parser.add_argument("--output", help="Output folder for the cloned site (required or asked interactively)")
     parser.add_argument("--cookies", help="Path to cookies JSON file (optional; will ask interactively if omitted)")
-    parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES, help="Maximum number of pages to crawl (default: 500)")
+    parser.add_argument("--max-pages", type=int, default=DEFAULT_MAX_PAGES, help="Maximum pages to download (0 = all discovered pages)")
     parser.add_argument("--ignore-link", action="append", default=[], help="Substring to ignore links (can repeat, e.g., --ignore-link signout)")
     parser.add_argument("--headless", action="store_true", help="Force headless mode")
     parser.add_argument("--no-headless", dest="headless", action="store_false", help="Disable headless mode (show browser)")
@@ -44,6 +46,45 @@ downloaded_resources = {"css": [], "js": [], "images": [], "fonts": []}
 visited_pages = set()
 pages_to_visit = [BASE_URL]
 downloaded_pages = []
+
+def init_db(db_path: str):
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pages (
+            url TEXT PRIMARY KEY,
+            status TEXT CHECK(status IN ('queued','downloaded','error')) NOT NULL,
+            file_path TEXT,
+            last_attempt TEXT
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+def db_mark_queued(conn, url: str):
+    cur = conn.cursor()
+    cur.execute("INSERT OR IGNORE INTO pages(url, status) VALUES (?, 'queued')", (url,))
+    conn.commit()
+
+def db_mark_downloaded(conn, url: str, file_path: str):
+    cur = conn.cursor()
+    cur.execute(
+        "UPDATE pages SET status='downloaded', file_path=?, last_attempt=? WHERE url=?",
+        (file_path, datetime.utcnow().isoformat(), url,)
+    )
+    conn.commit()
+
+def db_get_queued(conn):
+    cur = conn.cursor()
+    cur.execute("SELECT url FROM pages WHERE status='queued'")
+    return [row[0] for row in cur.fetchall()]
+
+def db_is_downloaded(conn, url: str) -> bool:
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM pages WHERE url=? AND status='downloaded'", (url,))
+    return cur.fetchone() is not None
 
 def get_resource_type(url):
     """Determine resource type from URL"""
@@ -142,6 +183,34 @@ def rewrite_links(soup, base_url, ignore_patterns=None):
     
     return modified_count, new_pages
 
+def discover_all_pages(page, base_url: str, ignore_patterns):
+    discovered = set()
+    queue = [base_url]
+    parsed_base = urlparse(base_url)
+
+    while queue:
+        current = queue.pop(0)
+        if current in discovered:
+            continue
+        discovered.add(current)
+
+        try:
+            page.goto(current, wait_until='networkidle', timeout=60000)
+            time.sleep(0.3)
+            html = page.content()
+            soup = BeautifulSoup(html, 'html.parser')
+            _, new_pages = rewrite_links(soup, current, ignore_patterns)
+
+            for u in new_pages:
+                pu = urlparse(u)
+                if pu.netloc == parsed_base.netloc and u not in discovered and u not in queue:
+                    queue.append(u)
+        except Exception:
+            # Ignore discovery errors, continue
+            continue
+
+    return discovered
+
 def main():
     global BASE_URL, output_folder, max_pages, downloaded_resources, visited_pages, pages_to_visit, downloaded_pages
 
@@ -185,8 +254,17 @@ def main():
 
     downloaded_resources = {"css": [], "js": [], "images": [], "fonts": []}
     visited_pages = set()
-    pages_to_visit = [BASE_URL]
     downloaded_pages = []
+
+    db_path = os.path.join(output_folder, 'clone_state.db')
+    conn = init_db(db_path)
+
+    queued_from_db = db_get_queued(conn)
+    if queued_from_db:
+        pages_to_visit = queued_from_db.copy()
+    else:
+        pages_to_visit = [BASE_URL]
+        db_mark_queued(conn, BASE_URL)
 
     ensure_output_dirs(output_folder)
 
@@ -212,16 +290,27 @@ def main():
         page = context.new_page()
 
         print("\n" + "="*60)
+        print("DISCOVERY PHASE")
+        print("="*60)
+
+        if max_pages == 0:
+            discovered = discover_all_pages(page, BASE_URL, ignore_patterns)
+            for url in discovered:
+                db_mark_queued(conn, url)
+            pages_to_visit = db_get_queued(conn)
+            print(f"Discovered pages: {len(pages_to_visit)}")
+
+        print("\n" + "="*60)
         print("CRAWLING WEBSITE PAGES")
         print("="*60)
 
         page_count = 0
         timeout_count = 0
 
-        while pages_to_visit and page_count < max_pages:
+        while pages_to_visit and (max_pages == 0 or page_count < max_pages):
             page_url = pages_to_visit.pop(0)
 
-            if page_url in visited_pages:
+            if page_url in visited_pages or db_is_downloaded(conn, page_url):
                 continue
 
             visited_pages.add(page_url)
@@ -287,6 +376,7 @@ def main():
 
                 downloaded_pages.append(page_url)
                 print(f"  ✓ Saved: {file_path}")
+                db_mark_downloaded(conn, page_url, file_path)
 
             except Exception as e:
                 timeout_count += 1
@@ -295,6 +385,7 @@ def main():
                     print("  (Skipping page due to repeated timeouts)")
 
         browser.close()
+        conn.close()
 
     print("\n" + "="*60)
     print("✓ WEBSITE CRAWL COMPLETE!")

@@ -10,6 +10,7 @@ A configurable Playwright-based crawler to mirror websites locally with CSS, Jav
 - Filters out unwanted links (logout, signout, etc.)
 - Headless or visible browser mode
 - Interactive or CLI-based configuration
+- SQLite-backed resume: persists discovered/downloaded URLs to continue after interruptions
 
 ## Installation
 
@@ -43,7 +44,7 @@ python "website clone.py" \
 | `--base-url` | URL | Yes* | Website root to start crawling |
 | `--output` | Path | Yes* | Destination folder for cloned site |
 | `--cookies` | Path | No | JSON file with browser cookies for authentication |
-| `--max-pages` | Integer | No | Max pages to crawl (default: 500) |
+| `--max-pages` | Integer | No | Max pages to download (default: 0). Set to 0 to discover all internal pages first and download them all. |
 | `--ignore-link` | String | No | Link substrings to skip (repeatable; e.g., `--ignore-link logout --ignore-link signout`) |
 | `--headless` | Flag | No | Run browser in headless mode |
 | `--no-headless` | Flag | No | Run browser with visible UI |
@@ -74,6 +75,12 @@ cloned-site/
     └── *.html
 ```
 
+## State & Resume
+- The cloner creates a SQLite database at `cloned-site/clone_state.db`.
+- Discovery phase queues all internal pages; each downloaded page is marked.
+- Re-run the script with the same `--output` and it resumes from the last state, skipping already-downloaded pages.
+- Useful for long crawls or when the process is interrupted.
+
 ## Examples
 
 ### Clone with Authentication
@@ -82,7 +89,7 @@ python "website clone.py" \
   --base-url "https://mysite.com/" \
   --output "./my-site-backup" \
   --cookies "./cookies.json" \
-  --max-pages 200
+  --max-pages 0
 ```
 
 ### Clone and Skip Logout Links
@@ -99,6 +106,15 @@ python "website clone.py" \
 ```bash
 python "website clone.py"
 # Then follow prompts to enter base URL, output folder, etc.
+```
+
+### Resume a Previous Run
+```bash
+python "website clone.py" \
+  --base-url "https://mysite.com/" \
+  --output "./my-site-backup" \
+  --max-pages 0
+# Already downloaded pages are skipped automatically based on clone_state.db
 ```
 
 ## Notes
