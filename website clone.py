@@ -256,6 +256,8 @@ def main():
     visited_pages = set()
     downloaded_pages = []
 
+    ensure_output_dirs(output_folder)
+
     db_path = os.path.join(output_folder, 'clone_state.db')
     conn = init_db(db_path)
 
@@ -265,8 +267,6 @@ def main():
     else:
         pages_to_visit = [BASE_URL]
         db_mark_queued(conn, BASE_URL)
-
-    ensure_output_dirs(output_folder)
 
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)

@@ -53,11 +53,12 @@ python "website clone.py" \
 
 ## How It Works
 
-1. **Crawling**: Uses Playwright to fetch pages with full JavaScript rendering
-2. **Asset Download**: Downloads CSS, JS, images, and fonts into organized subfolders
-3. **Link Rewriting**: Converts absolute URLs to relative paths (`/page` → `page.html`)
-4. **Local Navigation**: All links point to local files for offline browsing
-5. **Breadth-First**: Traverses links until `--max-pages` limit is reached
+1. **Discovery Phase** (when `--max-pages` is 0): Crawls all internal links to discover the complete site structure before downloading
+2. **Crawling**: Uses Playwright to fetch pages with full JavaScript rendering
+3. **Asset Download**: Downloads CSS, JS, images, and fonts into organized subfolders
+4. **Link Rewriting**: Converts absolute URLs to relative paths (`/page` → `page.html`)
+5. **Local Navigation**: All links point to local files for offline browsing
+6. **State Tracking**: SQLite database tracks queued and downloaded pages for resume capability
 
 ## Output Structure
 ```
